@@ -111,12 +111,17 @@ def _sync_stream_chat_completion(
                         content_chunk_count += 1
 
         end_time = time.perf_counter()
+        if not chunks or first_token_time is None:
+            return RequestMetrics(
+                success=False,
+                ttft_ms=0.0,
+                latency_s=0.0,
+                output_tokens=0,
+                response_text="",
+                error="Empty response stream (no content chunks received)",
+            )
         latency_s = max(end_time - start_time, 1e-6)
-        ttft_ms = (
-            (first_token_time - start_time) * 1000.0
-            if first_token_time is not None
-            else latency_s * 1000.0
-        )
+        ttft_ms = (first_token_time - start_time) * 1000.0
         full_text = "".join(chunks)
         output_tokens = (
             reported_completion_tokens

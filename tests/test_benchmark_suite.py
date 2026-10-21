@@ -19,6 +19,7 @@ class MockOpenAISSEHandler(BaseHTTPRequestHandler):
     """Mock OpenAI /v1/chat/completions streaming server for deterministic unit tests."""
 
     fail_every_n = 0
+    empty_stream = False
     request_counter = 0
 
     def log_message(self, format, *args):
@@ -52,6 +53,11 @@ class MockOpenAISSEHandler(BaseHTTPRequestHandler):
         self.wfile.write(f"data: {json.dumps(role_chunk)}\n\n".encode("utf-8"))
         self.wfile.flush()
 
+        if MockOpenAISSEHandler.empty_stream:
+            self.wfile.write(b"data: [DONE]\n\n")
+            self.wfile.flush()
+            return
+
         # 2. Send 4 content chunks
         for token_str in ["Concurrent ", "users ", "mean ", "simultaneous requests."]:
             chunk = {
@@ -73,6 +79,7 @@ class MockOpenAISSEHandler(BaseHTTPRequestHandler):
 @pytest.fixture
 def mock_sse_server():
     MockOpenAISSEHandler.fail_every_n = 0
+    MockOpenAISSEHandler.empty_stream = False
     MockOpenAISSEHandler.request_counter = 0
     server = ThreadingHTTPServer(("127.0.0.1", 0), MockOpenAISSEHandler)
     port = server.server_address[1]
@@ -81,6 +88,35 @@ def mock_sse_server():
     yield f"http://127.0.0.1:{port}"
     server.shutdown()
     server.server_close()
+
+
+def test_empty_sse_stream_and_partial_concurrency_failure(mock_sse_server):
+    MockOpenAISSEHandler.empty_stream = True
+    empty_metric = asyncio.run(
+        stream_chat_completion(
+            base_url=mock_sse_server,
+            model="Qwen/Qwen2.5-1.5B-Instruct",
+            messages=[{"role": "user", "content": "Hello"}],
+        )
+    )
+    assert empty_metric.success is False
+    assert "Empty response stream" in empty_metric.error
+
+    MockOpenAISSEHandler.empty_stream = False
+    MockOpenAISSEHandler.fail_every_n = 2
+    MockOpenAISSEHandler.request_counter = 0
+    conc_res = asyncio.run(
+        run_concurrency_benchmark(
+            base_url=mock_sse_server,
+            model="Qwen/Qwen2.5-1.5B-Instruct",
+            concurrency_levels=(2,),
+            num_requests=4,
+            trials=1,
+        )
+    )
+    assert conc_res["2"]["successful_requests"] == 2
+    assert conc_res["2"]["failed_requests"] == 2
+    assert conc_res["2"]["ttft_mean_ms"] > 0.0
 
 
 def test_stream_chat_completion_ignores_empty_role_chunk_for_ttft(mock_sse_server):
