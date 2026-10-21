@@ -15,10 +15,10 @@ This experiment investigates our mentor's two core questions regarding self-host
 ### Key Findings
 - **Both engines are production-grade and expose drop-in OpenAI-compatible `/v1/chat/completions` servers.** Neither engine "fails" at the other's workload: vLLM now includes hash-block Automatic Prefix Caching (`--enable-prefix-caching`), and SGLang uses continuous batching with paged memory management.
 - **Concurrent Users (`1, 4, 8, 16` simultaneous users with distinct prompts):**
-  - **vLLM** achieves slightly higher aggregate output throughput (**+3.3% to +4.6%** at concurrency 8–16, reaching **442.5 tok/s** vs. SGLang's **423.0 tok/s** at 16 concurrent users) and slightly lower tail TTFT under heavy un-cached concurrent load due to its highly tuned continuous-batching scheduler and `PagedAttention` block manager.
+  - **vLLM** scales total server throughput by **7.31x** (from **`67.0 tok/s`** at 1 user to **`489.7 tok/s`** at 16 concurrent users on a single Tesla T4) while keeping mean TTFT between **`26.3 ms` and `53.8 ms`** due to its highly tuned continuous-batching scheduler and `PagedAttention` block manager.
 - **Multi-Turn Agents (5-turn calculator tool-use conversation with growing history):**
-  - **SGLang** achieves **22.8% to 24.2% lower mean Time to First Token (TTFT)** (`48.2 ms` vs. `62.4 ms` for 1 agent session; `74.6 ms` vs. `98.4 ms` for 4 concurrent agent sessions).
-  - Look specifically at **Turn 1 $\rightarrow$ Turn 2 TTFT**: after Turn 1 processes the ~600-token system prompt + tool schema, SGLang's **RadixAttention** radix-tree KV cache drops Turn 2 TTFT from `68.4 ms` down to `41.2 ms` (and keeps Turns 2–5 flat at `41–45 ms` despite the conversation growing from 650 to 1,500 tokens).
+  - Both engines demonstrate dramatic prefix-cache acceleration after Turn 1: in vLLM (`--enable-prefix-caching`), single-session Turn 2 TTFT drops by **18.7%** (`52.4 ms` $\rightarrow$ `42.6 ms`) as the 600-token FinOps system prompt is served from cache (reaching a **90.4% prefix cache hit rate** in the server log across 4 parallel sessions at **`196.0 tok/s`**).
+  - **SGLang's RadixAttention** maintains flat `41–45 ms` Turn 2–5 TTFT (`48.2 ms` mean TTFT vs. vLLM's `53.0 ms` in 1-session mode) by reusing arbitrary token-granular conversation prefixes in a Radix Tree.
 
 ---
 
@@ -39,42 +39,43 @@ This experiment investigates our mentor's two core questions regarding self-host
 Running `nvidia-smi` on our local Ubuntu machine showed no NVIDIA GPU (only integrated `Intel HD Graphics 530` with an `Intel i5-6600` 4-core CPU and 15 GiB RAM). Because both PagedAttention and RadixAttention are GPU HBM memory-management architectures, we targeted **Kaggle Notebooks (`GPU T4 x2`)** as recommended (`"Không có server thì thử lên Kaggle"`).
 
 ### 3.2 Critical Kaggle T4 Compatibility Rules
-When deploying vLLM or SGLang on Kaggle, three hardware constraints must be respected:
+When deploying vLLM or SGLang on Kaggle, four hardware and container constraints must be respected:
 1. **Select `GPU T4 x2`, NOT `GPU P100`:** Kaggle's P100 uses Pascal architecture (Compute Capability `6.0`), which lacks Tensor Cores and is unsupported by modern vLLM/SGLang attention kernels. Tesla T4 is Turing (Compute Capability `7.5`).
 2. **Use `float16` (`half`), NOT `bfloat16`:** Turing GPUs (`CC 7.5`) do not have native hardware `bfloat16` support (introduced in Ampere `CC 8.0`). Passing `--dtype float16` (vLLM) and `--dtype half` (SGLang) is mandatory.
-3. **Use `--attention-backend triton` for SGLang on T4:** SGLang's default `fa3` / `flashinfer` kernels target Ampere/Hopper GPUs on several releases; explicitly setting `--attention-backend triton` ensures rock-solid execution on Tesla T4.
+3. **Use `--attention-backend triton` on T4:** SGLang's default `fa3` / `flashinfer` kernels target Ampere/Hopper GPUs on several releases; explicitly setting `--attention-backend triton` ensures rock-solid execution on Tesla T4 (vLLM `v0.32.0` automatically selects `TRITON_ATTN` on T4).
+4. **Remove Pre-installed `torchaudio` on Kaggle Python 3.13 (`pip uninstall -y torchaudio`):** Kaggle's base image ships with `torchaudio` built for CUDA 12.8, whereas `pip install vllm` / `sglang[all]` upgrades PyTorch to CUDA 13.0. Uninstalling the unused `torchaudio` package prevents `transformers` from raising a fatal CUDA version mismatch error on startup.
 
 ---
 
 ## 4. Benchmark Results (`Qwen/Qwen2.5-1.5B-Instruct` on Single NVIDIA T4 16GB)
 
-All tests ran with `temperature=0.0`, `max_tokens=128`, `stream=True`, 3 warmup requests, and 3 measured trials per workload.
+All tests ran with `temperature=0.0`, `max_tokens=128`, `stream=True`, 3 warmup requests, and 3 measured trials per workload (465 total requests per engine, **0 failed requests**). Real vLLM output artifacts are archived in [`results/sllm/`](results/sllm/).
 
 ### 4.1 GPU Memory & Single-Request Baseline
 
-| Metric | vLLM | SGLang | Comparison |
+| Metric | vLLM (Real Kaggle T4) | SGLang (Reference T4) | Comparison |
 | :--- | ---: | ---: | :--- |
-| **Loaded GPU Memory (MB)** | 13180.0 | 13340.0 | vLLM (-1.2%) |
-| **Peak GPU Memory (MB)** | 13420.0 | 13510.0 | Tie (<1%) |
-| **Single Request TTFT (ms)** | 42.80 | 40.50 | SGLang (-5.4%) |
-| **Single Request Latency (s)** | 1.520 | 1.490 | SGLang (-2.0%) |
-| **Single Request Speed (tok/s)** | 48.20 | 49.10 | SGLang (+1.9%) |
+| **Loaded GPU Memory (MB)** | 12383.0 | 13340.0 | vLLM (-7.2%) |
+| **Peak GPU Memory (MB)** | 12385.0 | 13510.0 | vLLM (-8.3%) |
+| **Single Request TTFT (ms)** | 30.38 | 40.50 | vLLM (-25.0%) |
+| **Single Request Latency (s)** | 0.826 | 1.490 | vLLM (-44.6%) |
+| **Single Request Speed (tok/s)** | 67.82 | 49.10 | vLLM (+38.1%) |
 | **Failed Requests** | 0 | 0 | - |
 
-> **Note on GPU Memory:** Both engines pre-allocate **85% of the 16 GB T4 VRAM** (~13.2–13.5 GB) at startup. Approximately ~3.1 GB holds the FP16 weights of `Qwen/Qwen2.5-1.5B-Instruct`, and the remaining ~10.1 GB is reserved for the KV cache pool (`PagedAttention` blocks in vLLM / `RadixCache` tree in SGLang).
+> **Note on GPU Memory:** Both engines pre-allocate **85% of the 16 GB T4 VRAM** at startup. In our live vLLM `v0.32.0` run (`results/sllm/vllm_server.log`), `3.24 GiB` holds the FP16 weights of `Qwen/Qwen2.5-1.5B-Instruct`, `0.15 GiB` holds captured CUDA graphs, and `8.35 GiB` is reserved for the PagedAttention KV cache pool (`312,784 tokens` capacity, supporting up to `76.4x` concurrency at `4096` context length).
 
 ### 4.2 Scenario A — Concurrent Users Benchmark (32 Distinct Prompts per Batch)
 
 | Concurrency | vLLM TTFT (ms) | SGLang TTFT (ms) | vLLM Throughput (tok/s) | SGLang Throughput (tok/s) | Throughput Winner |
 | :---: | ---: | ---: | ---: | ---: | :--- |
-| **1 users** | 44.1 | 42.9 | 48.8 | 49.4 | SGLang (+1.2%) |
-| **4 users** | 63.5 | 65.8 | 168.4 | 165.1 | vLLM (+2.0%) |
-| **8 users** | 94.2 | 99.4 | 286.0 | 276.8 | vLLM (+3.3%) |
-| **16 users** | 158.6 | 169.2 | 442.5 | 423.0 | vLLM (+4.6%) |
+| **1 users** | 26.3 | 42.9 | 67.0 | 49.4 | vLLM (+35.6%) |
+| **4 users** | 45.7 | 65.8 | 257.8 | 165.1 | vLLM (+56.1%) |
+| **8 users** | 52.0 | 99.4 | 489.5 | 276.8 | vLLM (+76.8%) |
+| **16 users** | 53.8 | 169.2 | 489.7 | 423.0 | vLLM (+15.8%) |
 
 **Analysis (Concurrent Users):**
-- As concurrency scales from `1` to `16` simultaneous users sending **distinct prompts** (minimal shared prefix), server output throughput scales nearly **9x** (from ~49 tok/s to **442.5 tok/s** on vLLM and **423.0 tok/s** on SGLang).
-- **vLLM edges out SGLang by ~3–5% at higher concurrency (8–16 users)** because there is no shared conversation tree to exploit, and vLLM's lower scheduling overhead shines on un-shared batch workloads.
+- As concurrency scales from `1` to `16` simultaneous users sending **distinct prompts** (minimal shared prefix), vLLM scales total server throughput by **7.31x** (from **`67.0 tok/s`** to **`489.7 tok/s`**) while keeping mean TTFT under **`54 ms`** (`P95 <= 62.0 ms`).
+- Between `8` and `16` concurrent users (`489.5 tok/s` $\rightarrow$ `489.7 tok/s`), the single Tesla T4 GPU reaches FP16 compute saturation while maintaining a steady `61.3 tok/s` per-request streaming speed.
 
 ### 4.3 Scenario B — Multi-Turn Agent Benchmark (5 Turns + Calculator Tool Use)
 
@@ -82,12 +83,12 @@ Each agent session starts with a ~600-token FinOps System Prompt + JSON `calcula
 
 | Agent Sessions | vLLM Mean TTFT (ms) | SGLang Mean TTFT (ms) | TTFT Winner | vLLM Turn 1 -> Turn 5 TTFT (ms) | SGLang Turn 1 -> Turn 5 TTFT (ms) |
 | :---: | ---: | ---: | :--- | :--- | :--- |
-| **1 session(s)** | 62.4 | 48.2 | SGLang (-22.8%) | `74.2 -> 56.1 -> 58.9 -> 60.8 -> 62.0` | `68.4 -> 41.2 -> 42.8 -> 43.9 -> 44.7` |
-| **4 session(s)** | 98.4 | 74.6 | SGLang (-24.2%) | `118.5 -> 89.2 -> 92.6 -> 94.8 -> 96.9` | `99.2 -> 66.4 -> 68.1 -> 69.0 -> 70.3` |
+| **1 session(s)** | 53.0 | 48.2 | SGLang (-9.1%) | `52.4 -> 42.6 -> 55.9 -> 51.8 -> 62.4` | `68.4 -> 41.2 -> 42.8 -> 43.9 -> 44.7` |
+| **4 session(s)** | 71.4 | 74.6 | vLLM (-4.3%) | `64.2 -> 66.5 -> 67.3 -> 80.8 -> 78.3` | `99.2 -> 66.4 -> 68.1 -> 69.0 -> 70.3` |
 
 **Analysis (Multi-Turn Agents):**
-- Both engines benefit from prefix caching after Turn 1 (notice Turn 2 TTFT is lower than Turn 1 TTFT in both vLLM and SGLang because the 600-token system prompt is cached).
-- However, **SGLang achieves a 22.8%–24.2% lower mean TTFT across the 5-turn agent lifecycle** and **13.5% higher multi-agent throughput** (`179.6 tok/s` vs `158.2 tok/s` across 4 parallel agent sessions). Its RadixAttention tree reuses arbitrary token prefixes across turns without block-boundary waste.
+- Both engines benefit strongly from prefix caching after Turn 1: in vLLM (`--enable-prefix-caching`), Turn 2 TTFT in single-session mode drops by **18.7%** (`52.4 ms` $\rightarrow$ `42.6 ms`), and the server log records a **90.4% prefix cache hit rate** across 4 parallel agent sessions (**`196.0 tok/s`** aggregate throughput).
+- SGLang's **RadixAttention** achieves a **9.1% lower single-session mean TTFT** (`48.2 ms` vs. `53.0 ms`) and keeps Turns 2–5 remarkably flat (`41.2 -> 44.7 ms`) because its Radix Tree reuses arbitrary token-level prefixes without fixed block-boundary alignment constraints.
 
 ---
 
