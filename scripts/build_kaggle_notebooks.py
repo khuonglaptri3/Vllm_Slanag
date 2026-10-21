@@ -148,11 +148,12 @@ def build_notebooks() -> None:
     for engine in ("vllm", "sglang"):
         if engine == "vllm":
             title = "# 01 — All-in-One vLLM Self-Hosting & Benchmark on Kaggle (NVIDIA T4)"
-            install_cmd = "!pip install -q vllm && pip uninstall -y -q torchaudio"
+            install_cmd = "!pip install -q -U vllm && pip uninstall -y -q torchaudio"
             port = 8000
             out_file = "vllm_results.json"
             summary_file = "vllm_summary.md"
             nb_path = notebooks_dir / "01_vllm_kaggle.ipynb"
+            root_nb_path = root / "01_vllm_kaggle.ipynb"
             launch_cmd_list = [
                 "vllm",
                 "serve",
@@ -169,11 +170,12 @@ def build_notebooks() -> None:
             ]
         else:
             title = "# 02 — All-in-One SGLang Self-Hosting & Benchmark on Kaggle (NVIDIA T4)"
-            install_cmd = '!pip install -q "sglang[all]" && pip uninstall -y -q torchaudio'
+            install_cmd = '!pip install -q -U "sglang[all]" torchvision && pip uninstall -y -q torchaudio'
             port = 30000
             out_file = "sglang_results.json"
             summary_file = "sglang_summary.md"
             nb_path = notebooks_dir / "02_sglang_kaggle.ipynb"
+            root_nb_path = root / "02_sglang_kaggle.ipynb"
             launch_cmd_list = [
                 "python3",
                 "-m",
@@ -198,6 +200,10 @@ import subprocess
 import time
 import urllib.request
 
+if 'server_proc' in globals() and server_proc.poll() is None:
+    server_proc.terminate()
+    server_proc.wait(timeout=15)
+
 BASELINE_GPU_MEM_MB = query_gpu_memory_mb(0)
 print(f"Baseline GPU 0 memory before starting {engine}: {{BASELINE_GPU_MEM_MB:.1f}} MB")
 
@@ -211,7 +217,7 @@ server_proc = subprocess.Popen(cmd, stdout=log_file, stderr=subprocess.STDOUT, e
 
 base_url = "http://127.0.0.1:{port}"
 ready = False
-for attempt in range(120):
+for attempt in range(180):
     if server_proc.poll() is not None:
         break
     try:
@@ -221,6 +227,10 @@ for attempt in range(120):
                 print(f"Server ready after {{attempt * 2}}s!")
                 break
     except Exception:
+        if attempt > 0 and attempt % 10 == 0:
+            lines = open("{engine}_server.log").read().splitlines()
+            last_line = lines[-1] if lines else "waiting..."
+            print(f"[{{attempt * 2}}s] Still starting {engine}... ({{last_line[:100]}})")
         time.sleep(2)
 
 if not ready:
@@ -283,9 +293,9 @@ if 'log_file' in globals() and not log_file.closed:
             _code_cell(cleanup_cell),
         ]
 
-        nb_path.write_text(
-            json.dumps(_wrap_notebook(cells), indent=2) + "\n", encoding="utf-8"
-        )
+        nb_content = json.dumps(_wrap_notebook(cells), indent=2) + "\n"
+        nb_path.write_text(nb_content, encoding="utf-8")
+        root_nb_path.write_text(nb_content, encoding="utf-8")
 
 
 if __name__ == "__main__":

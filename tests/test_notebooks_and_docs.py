@@ -10,6 +10,8 @@ def test_kaggle_notebooks_are_valid_and_contain_t4_flags():
 
     assert vllm_nb_path.exists()
     assert sglang_nb_path.exists()
+    assert (root / "01_vllm_kaggle.ipynb").exists()
+    assert (root / "02_sglang_kaggle.ipynb").exists()
 
     vllm_nb = json.loads(vllm_nb_path.read_text(encoding="utf-8"))
     sglang_nb = json.loads(sglang_nb_path.read_text(encoding="utf-8"))
