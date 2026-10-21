@@ -148,7 +148,7 @@ def build_notebooks() -> None:
     for engine in ("vllm", "sglang"):
         if engine == "vllm":
             title = "# 01 — All-in-One vLLM Self-Hosting & Benchmark on Kaggle (NVIDIA T4)"
-            install_cmd = "!pip install -q vllm"
+            install_cmd = "!pip install -q vllm && pip uninstall -y -q torchaudio"
             port = 8000
             out_file = "vllm_results.json"
             summary_file = "vllm_summary.md"
@@ -169,7 +169,7 @@ def build_notebooks() -> None:
             ]
         else:
             title = "# 02 — All-in-One SGLang Self-Hosting & Benchmark on Kaggle (NVIDIA T4)"
-            install_cmd = '!pip install -q "sglang[all]"'
+            install_cmd = '!pip install -q "sglang[all]" && pip uninstall -y -q torchaudio'
             port = 30000
             out_file = "sglang_results.json"
             summary_file = "sglang_summary.md"

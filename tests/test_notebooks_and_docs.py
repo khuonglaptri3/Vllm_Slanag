@@ -39,6 +39,7 @@ def test_kaggle_notebooks_are_valid_and_contain_t4_flags():
     assert "vllm_results.json" in vllm_src
     assert "format_single_engine_markdown" in vllm_src
     assert "vllm_summary.md" in vllm_src
+    assert "pip uninstall -y -q torchaudio" in vllm_src
 
     assert "--dtype half" in sglang_src
     assert "--attention-backend triton" in sglang_src
@@ -46,6 +47,7 @@ def test_kaggle_notebooks_are_valid_and_contain_t4_flags():
     assert "sglang_results.json" in sglang_src
     assert "format_single_engine_markdown" in sglang_src
     assert "sglang_summary.md" in sglang_src
+    assert "pip uninstall -y -q torchaudio" in sglang_src
 
 
 def test_report_and_readme_exist_and_cover_mentor_questions():
