@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate self-contained Kaggle notebooks for vLLM and SGLang benchmarks."""
+"""Generate two self-contained Kaggle notebooks (one for vLLM, one for SGLang)."""
 
 from __future__ import annotations
 
@@ -41,6 +41,70 @@ def _wrap_notebook(cells: list[dict]) -> dict:
     }
 
 
+SINGLE_ENGINE_FORMATTER_CODE = '''
+def format_single_engine_markdown(data: dict) -> str:
+    """Format a single engine's benchmark results into ready-to-copy Markdown tables."""
+    engine = data.get("engine", "unknown").upper()
+    model = data.get("model", "Qwen/Qwen2.5-1.5B-Instruct")
+    mem = data.get("gpu_memory", {})
+    single = data.get("single_request", {})
+    conc = data.get("concurrency", {})
+    agent = data.get("multiturn_agent", {})
+
+    lines = [
+        f"# {engine} Benchmark Results (`{model}`)",
+        "",
+        "## 1. GPU Memory & Single-Request Baseline",
+        "",
+        "| Metric | Value |",
+        "| :--- | ---: |",
+        f"| **Baseline GPU Memory (MB)** | {mem.get('baseline_mb', 0.0):.1f} |",
+        f"| **Loaded GPU Memory (MB)** | {mem.get('loaded_mb', 0.0):.1f} |",
+        f"| **Peak GPU Memory (MB)** | {mem.get('peak_mb', 0.0):.1f} |",
+        f"| **Single Request TTFT Mean (ms)** | {single.get('ttft_mean_ms', 0.0):.2f} ± {single.get('ttft_mean_ms_std', 0.0):.2f} |",
+        f"| **Single Request TTFT P95 (ms)** | {single.get('ttft_p95_ms', 0.0):.2f} |",
+        f"| **Single Request Total Latency (s)** | {single.get('latency_mean_s', 0.0):.3f} ± {single.get('latency_mean_s_std', 0.0):.3f} |",
+        f"| **Single Request Output Speed (tok/s)** | {single.get('request_tok_per_s', 0.0):.2f} |",
+        f"| **Failed Requests** | {single.get('failed_requests', 0)} |",
+        "",
+        f"**Sample Response:** _{single.get('sample_response', '')}_",
+        "",
+        "## 2. Concurrent Users Benchmark (32 Prompts per Batch)",
+        "",
+        "| Concurrency | Mean TTFT (ms) | P95 TTFT (ms) | Mean Latency (s) | Per-Req Speed (tok/s) | Total Server Throughput (tok/s) | Failed |",
+        "| :---: | ---: | ---: | ---: | ---: | ---: | :---: |",
+    ]
+
+    for lvl in sorted(conc.keys(), key=lambda x: int(x)):
+        c = conc[lvl]
+        lines.append(
+            f"| **{lvl} users** | {c.get('ttft_mean_ms', 0.0):.1f} | {c.get('ttft_p95_ms', 0.0):.1f} | "
+            f"{c.get('latency_mean_s', 0.0):.3f} | {c.get('request_tok_per_s', 0.0):.1f} | "
+            f"**{c.get('total_output_tok_per_s', 0.0):.1f}** | {c.get('failed_requests', 0)} |"
+        )
+
+    lines.extend([
+        "",
+        "## 3. Multi-Turn Agent Benchmark (5 Turns + Calculator Tool)",
+        "",
+        "| Parallel Agent Sessions | Mean TTFT (ms) | P95 TTFT (ms) | Mean Latency (s) | Total Throughput (tok/s) | Turn 1 -> Turn 5 TTFT (ms) | Failed |",
+        "| :---: | ---: | ---: | ---: | ---: | :--- | :---: |",
+    ])
+
+    for sess in sorted(agent.keys(), key=lambda x: int(x)):
+        a = agent[sess]
+        turns = a.get("per_turn_ttft_ms", [])
+        t_str = " -> ".join(f"{x:.1f}" for x in turns) if turns else "N/A"
+        lines.append(
+            f"| **{sess} session(s)** | {a.get('ttft_mean_ms', 0.0):.1f} | {a.get('ttft_p95_ms', 0.0):.1f} | "
+            f"{a.get('latency_mean_s', 0.0):.3f} | **{a.get('total_output_tok_per_s', 0.0):.1f}** | "
+            f"`{t_str}` | {a.get('failed_requests', 0)} |"
+        )
+
+    return "\\n".join(lines) + "\\n"
+'''.strip()
+
+
 def build_notebooks() -> None:
     root = Path(__file__).resolve().parent.parent
     notebooks_dir = root / "notebooks"
@@ -77,15 +141,17 @@ def build_notebooks() -> None:
             workloads_code,
             "\n".join(gpu_lines),
             "\n".join(runner_lines),
+            SINGLE_ENGINE_FORMATTER_CODE,
         ]
     )
 
     for engine in ("vllm", "sglang"):
         if engine == "vllm":
-            title = "# 01 — Self-Hosting & Benchmarking LLM with vLLM on Kaggle (NVIDIA T4)"
+            title = "# 01 — All-in-One vLLM Self-Hosting & Benchmark on Kaggle (NVIDIA T4)"
             install_cmd = "!pip install -q vllm"
             port = 8000
             out_file = "vllm_results.json"
+            summary_file = "vllm_summary.md"
             nb_path = notebooks_dir / "01_vllm_kaggle.ipynb"
             launch_cmd_list = [
                 "vllm",
@@ -102,10 +168,11 @@ def build_notebooks() -> None:
                 "8000",
             ]
         else:
-            title = "# 02 — Self-Hosting & Benchmarking LLM with SGLang on Kaggle (NVIDIA T4)"
+            title = "# 02 — All-in-One SGLang Self-Hosting & Benchmark on Kaggle (NVIDIA T4)"
             install_cmd = '!pip install -q "sglang[all]"'
             port = 30000
             out_file = "sglang_results.json"
+            summary_file = "sglang_summary.md"
             nb_path = notebooks_dir / "02_sglang_kaggle.ipynb"
             launch_cmd_list = [
                 "python3",
@@ -163,8 +230,8 @@ if not ready:
     raise RuntimeError("{engine} server failed to start")
 '''
 
-        run_cell = f'''import asyncio
-import json
+        run_cell = f'''import json
+from IPython.display import Markdown, display
 
 results = await run_full_suite(
     engine_name="{engine}",
@@ -183,19 +250,28 @@ results = await run_full_suite(
 with open("{out_file}", "w", encoding="utf-8") as f:
     json.dump(results, f, indent=2)
 
-print("Saved benchmark results to {out_file}")
-print(json.dumps(results, indent=2))
+summary_md = format_single_engine_markdown(results)
+with open("{summary_file}", "w", encoding="utf-8") as f:
+    f.write(summary_md)
+
+print("Saved benchmark results to {out_file} and {summary_file}\\n")
+print(summary_md)
+display(Markdown(summary_md))
 '''
 
         cleanup_cell = '''if 'server_proc' in globals() and server_proc.poll() is None:
     server_proc.terminate()
     server_proc.wait(timeout=15)
     print("Server stopped cleanly and GPU memory released.")
+if 'log_file' in globals() and not log_file.closed:
+    log_file.close()
 '''
 
         cells = [
             _md_cell(
                 f"{title}\n\n"
+                "This notebook is **100% self-contained** — you only need to upload this `.ipynb` file to Kaggle, "
+                "click **Run All**, and take the formatted results table at the bottom.\n\n"
                 "**Important Kaggle Setup:** In the right sidebar under **Settings -> Accelerator**, "
                 "select **GPU T4 x2** (not P100) and turn **Internet ON**."
             ),
