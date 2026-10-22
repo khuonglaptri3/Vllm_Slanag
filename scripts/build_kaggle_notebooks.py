@@ -170,7 +170,10 @@ def build_notebooks() -> None:
             ]
         else:
             title = "# 02 — All-in-One SGLang Self-Hosting & Benchmark on Kaggle (NVIDIA T4)"
-            install_cmd = '!pip install -q -U "sglang[all]" torchvision && pip uninstall -y -q torchaudio'
+            install_cmd = (
+                "!pip install -q -U sglang torchvision --extra-index-url https://pypi.nvidia.com "
+                "&& pip uninstall -y -q torchaudio"
+            )
             port = 30000
             out_file = "sglang_results.json"
             summary_file = "sglang_summary.md"
@@ -190,12 +193,16 @@ def build_notebooks() -> None:
                 "0.85",
                 "--attention-backend",
                 "triton",
+                "--sampling-backend",
+                "pytorch",
                 "--port",
                 "30000",
             ]
 
         server_cell = f'''# Launch command: {" ".join(launch_cmd_list)}
+import glob
 import os
+import site
 import subprocess
 import time
 import urllib.request
@@ -209,6 +216,19 @@ print(f"Baseline GPU 0 memory before starting {engine}: {{BASELINE_GPU_MEM_MB:.1
 
 env = os.environ.copy()
 env["CUDA_VISIBLE_DEVICES"] = "0"
+# Ensure CUDA 13 runtime libraries installed via pip (nvidia/cu13/lib, etc.) are discoverable
+nvidia_lib_dirs = []
+for sp in site.getsitepackages():
+    nvidia_lib_dirs.extend(sorted(glob.glob(os.path.join(sp, "nvidia", "*", "lib"))))
+if nvidia_lib_dirs:
+    existing_ld = env.get("LD_LIBRARY_PATH", "")
+    env["LD_LIBRARY_PATH"] = ":".join(nvidia_lib_dirs + ([existing_ld] if existing_ld else []))
+
+if "{engine}" == "sglang":
+    # Tesla T4 is SM75 (Turing); sgl_kernel prebuilt cubins only target SM80+, so use native PyTorch fused-op fallback
+    env["SGLANG_FORCE_FUSED_OP_BACKEND"] = "torch"
+    env["SGLANG_CRASH_ON_JIT_COMPILE"] = "1"
+
 cmd = {json.dumps(launch_cmd_list)}
 print("Launching:", " ".join(cmd))
 
@@ -217,7 +237,7 @@ server_proc = subprocess.Popen(cmd, stdout=log_file, stderr=subprocess.STDOUT, e
 
 base_url = "http://127.0.0.1:{port}"
 ready = False
-for attempt in range(180):
+for attempt in range(240):
     if server_proc.poll() is not None:
         break
     try:
@@ -235,8 +255,8 @@ for attempt in range(180):
 
 if not ready:
     log_file.flush()
-    print("Server failed to start. Last 50 log lines:")
-    print("\\n".join(open("{engine}_server.log").read().splitlines()[-50:]))
+    print("Server failed to start. Last 80 log lines:")
+    print("\\n".join(open("{engine}_server.log").read().splitlines()[-80:]))
     raise RuntimeError("{engine} server failed to start")
 '''
 

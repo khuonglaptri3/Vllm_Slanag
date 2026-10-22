@@ -45,6 +45,10 @@ def test_kaggle_notebooks_are_valid_and_contain_t4_flags():
 
     assert "--dtype half" in sglang_src
     assert "--attention-backend triton" in sglang_src
+    assert "--sampling-backend pytorch" in sglang_src
+    assert "SGLANG_FORCE_FUSED_OP_BACKEND" in sglang_src
+    assert "LD_LIBRARY_PATH" in sglang_src
+    assert "--extra-index-url https://pypi.nvidia.com" in sglang_src
     assert "Qwen/Qwen2.5-1.5B-Instruct" in sglang_src
     assert "sglang_results.json" in sglang_src
     assert "format_single_engine_markdown" in sglang_src

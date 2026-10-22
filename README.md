@@ -11,6 +11,7 @@ This repository contains our team's reproducible experiment and benchmark compar
 - [`notebooks/02_sglang_kaggle.ipynb`](./notebooks/02_sglang_kaggle.ipynb) — Self-contained Kaggle notebook that installs `sglang[all]`, launches `sglang.launch_server` on GPU 0, runs the exact same 3 workloads, and exports `sglang_results.json`.
 - [`benchmark/`](./benchmark/) — Modular Python benchmark library (`workloads.py`, `gpu_monitor.py`, `runner.py`) using OpenAI-compatible SSE streaming (`/v1/chat/completions`).
 - [`scripts/compare_results.py`](./scripts/compare_results.py) — CLI tool that merges `vllm_results.json` and `sglang_results.json` into side-by-side Markdown comparison tables.
+- [`results/`](./results/) — Live Kaggle NVIDIA T4 benchmark artifacts, summary Markdown tables, and full server logs for both vLLM ([`results/sllm/`](./results/sllm/)) and SGLang ([`results/slang/`](./results/slang/)).
 - [`sample_results/`](./sample_results/) — Reference Kaggle NVIDIA T4 benchmark outputs (`vllm_results_t4_sample.json` and `sglang_results_t4_sample.json`).
 - [`tests/`](./tests/) — Local unit and integration test suite using a mock OpenAI SSE streaming server (runs on CPU with zero GPU required).
 
