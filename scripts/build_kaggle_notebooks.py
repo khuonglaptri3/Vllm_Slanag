@@ -105,6 +105,96 @@ def format_single_engine_markdown(data: dict) -> str:
 '''.strip()
 
 
+# SGLang cells verified on Kaggle T4: Rust toolchain for outlines_core, uv-based install,
+# libcuda.so link in a writable dir for FlashInfer JIT, and sys.executable launch.
+SGLANG_INSTALL_CELL = r'''
+!which cargo > /dev/null 2>&1 || (curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal -q)
+import os
+os.environ['PATH'] = f"{os.path.expanduser('~/.cargo/bin')}:{os.environ.get('PATH', '')}"
+!pip install -q "setuptools<82" uv
+!uv pip install --system --prerelease=allow "sglang[all]" || pip install "sglang[all]"
+!pip uninstall -y -q torchaudio
+import importlib, sglang
+print(f"SGLang v{sglang.__version__} successfully installed!")
+'''.strip()
+
+SGLANG_SERVER_CELL = r'''
+# Launch command: python3 -m sglang.launch_server --model-path Qwen/Qwen2.5-1.5B-Instruct --dtype half --context-length 4096 --mem-fraction-static 0.85 --attention-backend triton --sampling-backend pytorch --port 30000
+import os
+import sys
+import glob
+import subprocess
+import time
+import urllib.request
+
+# FlashInfer JIT-compiles kernels for the T4 (sm_75) and links them with `-lcuda`.
+# The NVIDIA driver only ships `libcuda.so.1` (no `libcuda.so`), and /usr/local/cuda is
+# read-only on Kaggle, so we create the `libcuda.so` symlink in a writable directory
+# and expose it to the linker through LIBRARY_PATH.
+CUDA_LINK_DIR = "/tmp/cuda_link"
+os.makedirs(CUDA_LINK_DIR, exist_ok=True)
+libcuda_candidates = []
+try:
+    ldconfig_out = subprocess.run(["ldconfig", "-p"], capture_output=True, text=True).stdout
+    libcuda_candidates += [line.split("=>")[-1].strip() for line in ldconfig_out.splitlines() if "libcuda.so.1" in line]
+except Exception:
+    pass
+for pattern in ("/usr/lib/x86_64-linux-gnu/libcuda.so.1", "/usr/lib64/libcuda.so.1", "/usr/local/nvidia/lib64/libcuda.so.1", "/usr/lib/wsl/lib/libcuda.so.1", "/usr/local/cuda/lib64/stubs/libcuda.so", "/usr/local/cuda/targets/*/lib/stubs/libcuda.so"):
+    libcuda_candidates += glob.glob(pattern)
+libcuda_target = next((p for p in libcuda_candidates if os.path.exists(p)), None)
+if libcuda_target:
+    link_path = os.path.join(CUDA_LINK_DIR, "libcuda.so")
+    if os.path.lexists(link_path):
+        os.remove(link_path)
+    os.symlink(libcuda_target, link_path)
+    print(f"Linked {link_path} -> {libcuda_target}")
+else:
+    print("WARNING: libcuda.so.1 not found; FlashInfer JIT linking may fail")
+
+if 'server_proc' in globals() and server_proc.poll() is None:
+    server_proc.terminate()
+    server_proc.wait(timeout=15)
+
+BASELINE_GPU_MEM_MB = query_gpu_memory_mb(0)
+print(f"Baseline GPU 0 memory before starting sglang: {BASELINE_GPU_MEM_MB:.1f} MB")
+
+env = os.environ.copy()
+env["CUDA_VISIBLE_DEVICES"] = "0"
+env["PATH"] = f"{os.path.dirname(sys.executable)}:{env.get('PATH', '')}"
+env["LIBRARY_PATH"] = f"{CUDA_LINK_DIR}:{env.get('LIBRARY_PATH', '')}"
+env["LD_LIBRARY_PATH"] = f"{CUDA_LINK_DIR}:{env.get('LD_LIBRARY_PATH', '')}"
+cmd = [sys.executable, "-m", "sglang.launch_server", "--model-path", "Qwen/Qwen2.5-1.5B-Instruct", "--dtype", "half", "--context-length", "4096", "--mem-fraction-static", "0.85", "--attention-backend", "triton", "--sampling-backend", "pytorch", "--port", "30000"]
+print("Launching:", " ".join(cmd))
+
+log_file = open("sglang_server.log", "w")
+server_proc = subprocess.Popen(cmd, stdout=log_file, stderr=subprocess.STDOUT, env=env)
+
+base_url = "http://127.0.0.1:30000"
+ready = False
+for attempt in range(180):
+    if server_proc.poll() is not None:
+        break
+    try:
+        with urllib.request.urlopen(f"{base_url}/v1/models", timeout=2) as resp:
+            if resp.status == 200:
+                ready = True
+                print(f"Server ready after {attempt * 2}s!")
+                break
+    except Exception:
+        if attempt > 0 and attempt % 10 == 0:
+            lines = open("sglang_server.log").read().splitlines()
+            last_line = lines[-1] if lines else "waiting..."
+            print(f"[{attempt * 2}s] Still starting sglang... ({last_line[:100]})")
+        time.sleep(2)
+
+if not ready:
+    log_file.flush()
+    print("Server failed to start. Last 50 log lines:")
+    print("\n".join(open("sglang_server.log").read().splitlines()[-50:]))
+    raise RuntimeError("sglang server failed to start")
+'''.strip()
+
+
 def build_notebooks() -> None:
     root = Path(__file__).resolve().parent.parent
     notebooks_dir = root / "notebooks"
@@ -170,10 +260,7 @@ def build_notebooks() -> None:
             ]
         else:
             title = "# 02 — All-in-One SGLang Self-Hosting & Benchmark on Kaggle (NVIDIA T4)"
-            install_cmd = (
-                "!pip install -q -U sglang torchvision --extra-index-url https://pypi.nvidia.com "
-                "&& pip uninstall -y -q torchaudio"
-            )
+            install_cmd = SGLANG_INSTALL_CELL
             port = 30000
             out_file = "sglang_results.json"
             summary_file = "sglang_summary.md"
@@ -259,6 +346,9 @@ if not ready:
     print("\\n".join(open("{engine}_server.log").read().splitlines()[-80:]))
     raise RuntimeError("{engine} server failed to start")
 '''
+
+        if engine == "sglang":
+            server_cell = SGLANG_SERVER_CELL
 
         run_cell = f'''import json
 from IPython.display import Markdown, display
